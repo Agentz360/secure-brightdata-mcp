@@ -6,17 +6,25 @@ import {Browser_session} from './browser_session.js';
 let browser_zone = process.env.BROWSER_ZONE || 'mcp_browser';
 
 let open_session;
-const require_browser = async()=>{
-    if (!open_session)
+let open_session_country = null;
+const require_browser = async country=>{
+    const normalized_country = country ? country.toLowerCase()
+        : open_session_country;
+
+    const needs_new_session = !open_session
+        || normalized_country!==open_session_country;
+
+    if (needs_new_session)
     {
+        open_session_country = normalized_country || null;
         open_session = new Browser_session({
-            cdp_endpoint: await calculate_cdp_endpoint(),
+            cdp_endpoint: await calculate_cdp_endpoint(open_session_country),
         });
     }
     return open_session;
 };
 
-const calculate_cdp_endpoint = async()=>{
+const calculate_cdp_endpoint = async country=>{
     try {
         const status_response = await axios({
             url: 'https://api.brightdata.com/status',
@@ -31,8 +39,9 @@ const calculate_cdp_endpoint = async()=>{
         });
         const password = password_response.data.passwords[0];
 
-        return `wss://brd-customer-${customer}-zone-${browser_zone}:`
-            +`${password}@brd.superproxy.io:9222`;
+        const country_suffix = country ? `-country-${country}` : '';
+        return `wss://brd-customer-${customer}-zone-${browser_zone}`
+            +`${country_suffix}:${password}@brd.superproxy.io:9222`;
     } catch(e){
         if (e.response?.status===422)
             throw new Error(`Browser zone '${browser_zone}' does not exist`);
@@ -43,11 +52,21 @@ const calculate_cdp_endpoint = async()=>{
 let scraping_browser_navigate = {
     name: 'scraping_browser_navigate',
     description: 'Navigate a scraping browser session to a new URL',
+    annotations: {
+        title: 'Browser Navigate',
+        destructiveHint: true,
+        openWorldHint: true,
+    },
     parameters: z.object({
         url: z.string().describe('The URL to navigate to'),
+        country: z.string().regex(/^[A-Za-z]{2}$/)
+            .optional()
+            .describe('Optional 2-letter ISO country code to route the '
+            +'browser session (e.g., "US", "GB")'),
     }),
-    execute: async({url})=>{
-        const browser_session = await require_browser();
+    execute: async({url, country})=>{
+        const normalized_country = country?.toLowerCase();
+        const browser_session = await require_browser(normalized_country);
         const page = await browser_session.get_page({url});
         await browser_session.clear_requests();
         try {
@@ -69,6 +88,10 @@ let scraping_browser_navigate = {
 let scraping_browser_go_back = {
     name: 'scraping_browser_go_back',
     description: 'Go back to the previous page',
+    annotations: {
+        title: 'Browser Go Back',
+        destructiveHint: true,
+    },
     parameters: z.object({}),
     execute: async()=>{
         const page = await (await require_browser()).get_page();
@@ -88,6 +111,10 @@ let scraping_browser_go_back = {
 const scraping_browser_go_forward = {
     name: 'scraping_browser_go_forward',
     description: 'Go forward to the next page',
+    annotations: {
+        title: 'Browser Go Forward',
+        destructiveHint: true,
+    },
     parameters: z.object({}),
     execute: async()=>{
         const page = await (await require_browser()).get_page();
@@ -114,14 +141,17 @@ let scraping_browser_snapshot = {
         'Use this before interacting with elements to get proper refs instead '
         +'of guessing selectors.'
     ].join('\n'),
+    annotations: {
+        title: 'Browser Snapshot',
+        readOnlyHint: true,
+    },
     parameters: z.object({
         filtered: z.boolean().optional().describe(
             'Whether to apply filtering/compaction (default: false). '
             +'Set to true to get a compacted version of the snapshot.'),
     }),
-    execute: async({filtered=false}, ctx)=>{
-        const browser_session = await require_browser(ctx.api_token,
-            ctx.browser_zone, ctx.browserSessionKey);
+    execute: async({filtered=false})=>{
+        const browser_session = await require_browser();
         const page = await browser_session.get_page();
         try {
             const snapshot = await browser_session.capture_snapshot(
@@ -153,6 +183,10 @@ let scraping_browser_click_ref = {
         'Use scraping_browser_snapshot first to get the correct ref values.',
         'This is more reliable than CSS selectors.'
     ].join('\n'),
+    annotations: {
+        title: 'Browser Click Element',
+        destructiveHint: true,
+    },
     parameters: z.object({
         ref: z.string().describe('The ref attribute from the ARIA snapshot (e.g., "23")'),
         element: z.string().describe('Description of the element being clicked for context'),
@@ -176,6 +210,10 @@ let scraping_browser_type_ref = {
         'Use scraping_browser_snapshot first to get the correct ref values.',
         'This is more reliable than CSS selectors.'
     ].join('\n'),
+    annotations: {
+        title: 'Browser Type Text',
+        destructiveHint: true,
+    },
     parameters: z.object({
         ref: z.string().describe('The ref attribute from the ARIA snapshot (e.g., "23")'),
         element: z.string().describe('Description of the element being typed into for context'),
@@ -202,6 +240,10 @@ let scraping_browser_type_ref = {
 let scraping_browser_screenshot = {
     name: 'scraping_browser_screenshot',
     description: 'Take a screenshot of the current page',
+    annotations: {
+        title: 'Browser Screenshot',
+        readOnlyHint: true,
+    },
     parameters: z.object({
         full_page: z.boolean().optional().describe([
             'Whether to screenshot the full page (default: false)',
@@ -225,6 +267,10 @@ let scraping_browser_get_html = {
     description: 'Get the HTML content of the current page. Avoid using this '
     +'tool and if used, use full_page option unless it is important to see '
     +'things like script tags since this can be large',
+    annotations: {
+        title: 'Browser Get HTML',
+        readOnlyHint: true,
+    },
     parameters: z.object({
         full_page: z.boolean().optional().describe([
             'Whether to get the full page HTML including head and script tags',
@@ -250,6 +296,10 @@ let scraping_browser_get_html = {
 let scraping_browser_get_text = {
     name: 'scraping_browser_get_text',
     description: 'Get the text content of the current page',
+    annotations: {
+        title: 'Browser Get Text',
+        readOnlyHint: true,
+    },
     parameters: z.object({}),
     execute: async()=>{
         const page = await (await require_browser()).get_page();
@@ -261,6 +311,10 @@ let scraping_browser_get_text = {
 let scraping_browser_scroll = {
     name: 'scraping_browser_scroll',
     description: 'Scroll to the bottom of the current page',
+    annotations: {
+        title: 'Browser Scroll',
+        destructiveHint: true,
+    },
     parameters: z.object({}),
     execute: async()=>{
         const page = await (await require_browser()).get_page();
@@ -282,6 +336,10 @@ let scraping_browser_scroll_to_ref = {
         'Use scraping_browser_snapshot first to get the correct ref values.',
         'This is more reliable than CSS selectors.'
     ].join('\n'),
+    annotations: {
+        title: 'Browser Scroll to Element',
+        destructiveHint: true,
+    },
     parameters: z.object({
         ref: z.string().describe('The ref attribute from the ARIA snapshot (e.g., "23")'),
         element: z.string().describe('Description of the element to scroll to'),
@@ -307,6 +365,10 @@ let scraping_browser_network_requests = {
         'Useful for debugging API calls, tracking data fetching, and '
         +'understanding page behavior.'
     ].join('\n'),
+    annotations: {
+        title: 'Browser Network Requests',
+        readOnlyHint: true,
+    },
     parameters: z.object({}),
     execute: async()=>{
         const browser_session = await require_browser();
@@ -343,6 +405,10 @@ let scraping_browser_wait_for_ref = {
         'Use scraping_browser_snapshot first to get the correct ref values.',
         'This is more reliable than CSS selectors.'
     ].join('\n'),
+    annotations: {
+        title: 'Browser Wait for Element',
+        readOnlyHint: true,
+    },
     parameters: z.object({
         ref: z.string().describe('The ref attribute from the ARIA snapshot (e.g., "23")'),
         element: z.string().describe('Description of the element being waited for'),
@@ -361,6 +427,62 @@ let scraping_browser_wait_for_ref = {
     },
 };
 
+let scraping_browser_fill_form = {
+    name: 'scraping_browser_fill_form',
+    description: [
+        'Fill multiple form fields in one operation.',
+        'Use scraping_browser_snapshot first to get the correct ref values.',
+        'This is more efficient than filling fields one by one.'
+    ].join('\n'),
+    parameters: z.object({
+        fields: z.array(z.object({
+            name: z.string().describe('Human-readable field name'),
+            type: z.enum(['textbox', 'checkbox', 'radio', 'combobox',
+                'slider']).describe('Type of the field'),
+            ref: z.string().describe(
+                'Exact target field reference from the page snapshot'),
+            value: z.string().describe([
+                'Value to fill in the field.',
+                'For checkbox: use "true" or "false".',
+                'For combobox: use the text of the option to select.'
+            ].join(' ')),
+        })).describe('Fields to fill in'),
+    }),
+    execute: async({fields})=>{
+        const browser_session = await require_browser();
+        try {
+            const results = [];
+            for (const field of fields)
+            {
+                const locator = await browser_session.ref_locator({
+                    element: field.name,
+                    ref: field.ref,
+                });
+                if (field.type=='textbox' || field.type=='slider')
+                {
+                    await locator.fill(field.value);
+                    results.push(`Filled ${field.name} with "${field.value}"`);
+                }
+                else if (field.type=='checkbox' || field.type=='radio')
+                {
+                    const checked = field.value=='true';
+                    await locator.setChecked(checked);
+                    results.push(`Set ${field.name} to ${checked ? 'checked'
+                        : 'unchecked'}`);
+                }
+                else if (field.type=='combobox')
+                {
+                    await locator.selectOption({label: field.value});
+                    results.push(`Selected "${field.value}" in ${field.name}`);
+                }
+            }
+            return 'Successfully filled form:\n'+results.join('\n');
+        } catch(e){
+            throw new UserError(`Error filling form: ${e}`);
+        }
+    },
+};
+
 export const tools = [
     scraping_browser_navigate,
     scraping_browser_go_back,
@@ -371,6 +493,7 @@ export const tools = [
     scraping_browser_screenshot,
     scraping_browser_network_requests,
     scraping_browser_wait_for_ref,
+    scraping_browser_fill_form,
     scraping_browser_get_text,
     scraping_browser_get_html,
     scraping_browser_scroll,

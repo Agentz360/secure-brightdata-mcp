@@ -14,6 +14,7 @@ const api_token = process.env.API_TOKEN;
 const unlocker_zone = process.env.WEB_UNLOCKER_ZONE || 'mcp_unlocker';
 const browser_zone = process.env.BROWSER_ZONE || 'mcp_browser';
 const pro_mode = process.env.PRO_MODE === 'true';
+const polling_timeout = parseInt(process.env.POLLING_TIMEOUT || '600', 10);
 const pro_mode_tools = ['search_engine', 'scrape_as_markdown',
     'search_engine_batch', 'scrape_batch'];
 const tool_groups = process.env.GROUPS ?
@@ -176,6 +177,11 @@ addTool({
     description: 'Scrape search results from Google, Bing or Yandex. Returns '
         +'SERP results in JSON or Markdown (URL, title, description), Ideal for'
         +'gathering current information, news, and detailed search results.',
+    annotations: {
+        title: 'Search Engine',
+        readOnlyHint: true,
+        openWorldHint: true,
+    },
     parameters: z.object({
         query: z.string(),
         engine: z.enum(['google', 'bing', 'yandex'])
@@ -220,6 +226,11 @@ addTool({
     +'content extraction and get back the results in MarkDown language. '
     +'This tool can unlock any webpage even if it uses bot detection or '
     +'CAPTCHA.',
+    annotations: {
+        title: 'Scrape as Markdown',
+        readOnlyHint: true,
+        openWorldHint: true,
+    },
     parameters: z.object({url: z.string().url()}),
     execute: tool_fn('scrape_as_markdown', async({url}, ctx)=>{
         let response = await axios({
@@ -246,6 +257,11 @@ addTool({
     name: 'search_engine_batch',
     description: 'Run multiple search queries simultaneously. Returns '
     +'JSON for Google, Markdown for Bing/Yandex.',
+    annotations: {
+        title: 'Search Engine Batch',
+        readOnlyHint: true,
+        openWorldHint: true,
+    },
     parameters: z.object({
         queries: z.array(z.object({
             query: z.string(),
@@ -254,7 +270,7 @@ addTool({
                 .default('google'),
             cursor: z.string()
                 .optional(),
-        })).min(1).max(10),
+        })).min(1).max(5),
     }),
     execute: tool_fn('search_engine_batch', async ({queries}, ctx)=>{
         const search_promises = queries.map(({query, engine, cursor})=>{
@@ -298,7 +314,7 @@ addTool({
             });
         });
 
-        const results = await Promise.all(search_promises);
+        const results = await Promise.allSettled(search_promises);
         return JSON.stringify(results, null, 2);
     }),
 });
@@ -309,8 +325,13 @@ addTool({
         +'content extraction and get back the results in MarkDown language. '
         +'This tool can unlock any webpage even if it uses bot detection or '
         +'CAPTCHA.',
+   annotations: {
+       title: 'Scrape Batch',
+       readOnlyHint: true,
+       openWorldHint: true,
+   },
    parameters: z.object({
-       urls: z.array(z.string().url()).min(1).max(10).describe('Array of URLs to scrape (max 10)')
+       urls: z.array(z.string().url()).min(1).max(5).describe('Array of URLs to scrape (max 5)')
    }),
    execute: tool_fn('scrape_batch', async ({urls}, ctx)=>{
        const scrapePromises = urls.map(url =>
@@ -331,7 +352,7 @@ addTool({
            }))
        );
 
-       const results = await Promise.all(scrapePromises);
+       const results = await Promise.allSettled(scrapePromises);
        return JSON.stringify(results, null, 2);
    }),
 });
@@ -342,6 +363,11 @@ addTool({
     +'content extraction and get back the results in HTML. '
     +'This tool can unlock any webpage even if it uses bot detection or '
     +'CAPTCHA.',
+    annotations: {
+        title: 'Scrape as HTML',
+        readOnlyHint: true,
+        openWorldHint: true,
+    },
     parameters: z.object({url: z.string().url()}),
     execute: tool_fn('scrape_as_html', async({url}, ctx)=>{
         let response = await axios({
@@ -365,6 +391,11 @@ addTool({
         + 'First scrapes the page as markdown, then uses AI sampling to convert '
         + 'it to structured JSON format. This tool can unlock any webpage even '
         + 'if it uses bot detection or CAPTCHA.',
+    annotations: {
+        title: 'Extract Structured Data',
+        readOnlyHint: true,
+        openWorldHint: true,
+    },
     parameters: z.object({
         url: z.string().url(),
         extraction_prompt: z.string().optional().describe(
@@ -419,6 +450,10 @@ addTool({
 addTool({
     name: 'session_stats',
     description: 'Tell the user about the tool usage during this session',
+    annotations: {
+        title: 'Session Stats',
+        readOnlyHint: true,
+    },
     parameters: z.object({}),
     execute: tool_fn('session_stats', async()=>{
         let used_tools = Object.entries(debug_stats.tool_calls);
@@ -826,6 +861,12 @@ const datasets = [{
     ].join('\n'),
     inputs: ['url'],
 }];
+const dataset_id_to_title = id=>{
+    return id.split('_')
+        .map(word=>word.charAt(0).toUpperCase()+word.slice(1))
+        .join(' ');
+};
+
 for (let {dataset_id, id, description, inputs, defaults = {}, fixed_values = {}} of datasets)
 {
     const tool_name = `web_data_${id}`;
@@ -839,6 +880,11 @@ for (let {dataset_id, id, description, inputs, defaults = {}, fixed_values = {}}
     addTool({
         name: tool_name,
         description,
+        annotations: {
+            title: dataset_id_to_title(id),
+            readOnlyHint: true,
+            openWorldHint: true,
+        },
         parameters: z.object(parameters),
         execute: tool_fn(tool_name, async(data, ctx)=>{
             data = {...data, ...fixed_values};
@@ -854,7 +900,7 @@ for (let {dataset_id, id, description, inputs, defaults = {}, fixed_values = {}}
             let snapshot_id = trigger_response.data.snapshot_id;
             console.error(`[${tool_name}] triggered collection with `
                 +`snapshot ID: ${snapshot_id}`);
-            let max_attempts = 600;
+            let max_attempts = polling_timeout;
             let attempts = 0;
             while (attempts < max_attempts)
             {
@@ -875,7 +921,8 @@ for (let {dataset_id, id, description, inputs, defaults = {}, fixed_values = {}}
                         method: 'GET',
                         headers: api_headers(ctx.clientName, tool_name),
                     });
-                    if (['running', 'building'].includes(snapshot_response.data?.status))
+                    if (['running', 'building', 'starting'].includes(
+                        snapshot_response.data?.status))
                     {
                         console.error(`[${tool_name}] snapshot not ready, `
                             +`polling again (attempt `
